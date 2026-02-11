@@ -10,21 +10,28 @@ from sqlalchemy import create_engine, Column, Integer, BigInteger
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # settings
-API_TOKEN = os.getenv("API_TOKEN")  # make sure this env var exists on server
+API_TOKEN = os.getenv("API_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+# --- CHECKERS ---
 if not API_TOKEN:
-    logging.critical("API_TOKEN is missing!")
+    logging.critical("Error: API_TOKEN is missing in Environment Variables!")
     sys.exit(1)
 
-# Проверка на наличие БД
 if not DATABASE_URL:
-    logging.critical("DATABASE_URL is missing!")
+    logging.critical(
+        "Error: DATABASE_URL is missing in Environment Variables!")
     sys.exit(1)
 
+# --- FIX DATABASE URL ---
+# 1. Remove accidentally copied spaces (leading/trailing)
+DATABASE_URL = DATABASE_URL.strip()
+
+# 2. Fix 'postgres://' dialect for SQLAlchemy (it requires 'postgresql://')
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+# --- DATABASE SETUP ---
 Base = declarative_base()
 
 
@@ -36,14 +43,20 @@ class UserMMR(Base):
     loss_today = Column(Integer, default=0)
 
 
-engine = create_engine(DATABASE_URL)
-Base.metadata.create_all(engine)
-Session = sessionmaker(bind=engine)
+try:
+    engine = create_engine(DATABASE_URL)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+except Exception as e:
+    logging.critical(f"Database connection failed: {e}")
+    sys.exit(1)
 
-# bot setup
+# --- BOT SETUP ---
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+
+# --- WEB SERVER (Keep-Alive) ---
 
 
 async def handle_health_check(request):
@@ -55,11 +68,12 @@ async def start_web_server():
     app.router.add_get('/', handle_health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    # render provides port via env var, default to 8080
     port = int(os.getenv("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     logging.info(f"Web server started on port {port}")
+
+# --- KEYBOARDS ---
 
 
 def get_keyboard():
@@ -70,38 +84,41 @@ def get_keyboard():
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
 
-# db helper
+# --- DB HELPERS ---
 
 
 def update_mmr(user_id, delta=0, set_value=None):
     session = Session()
-    user = session.query(UserMMR).filter_by(user_id=user_id).first()
+    try:
+        user = session.query(UserMMR).filter_by(user_id=user_id).first()
 
-    if not user:
-        # if user doesn't exist, init with provided value or default 3000
-        start_val = set_value if set_value is not None else 3000
-        user = UserMMR(user_id=user_id, current_mmr=start_val)
-        session.add(user)
+        if not user:
+            start_val = set_value if set_value is not None else 3000
+            user = UserMMR(user_id=user_id, current_mmr=start_val)
+            session.add(user)
 
-    if set_value is not None:
-        # manual set via command
-        user.current_mmr = set_value
-        user.wins_today = 0
-        user.loss_today = 0
-    else:
-        # standard update
-        user.current_mmr += delta
-        if delta > 0:
-            user.wins_today += 1
-        elif delta < 0:
-            user.loss_today += 1
+        if set_value is not None:
+            user.current_mmr = set_value
+            user.wins_today = 0
+            user.loss_today = 0
+        else:
+            user.current_mmr += delta
+            if delta > 0:
+                user.wins_today += 1
+            elif delta < 0:
+                user.loss_today += 1
 
-    new_mmr = user.current_mmr
-    session.commit()
-    session.close()
-    return new_mmr
+        new_mmr = user.current_mmr
+        session.commit()
+        return new_mmr
+    except Exception as e:
+        logging.error(f"Error updating DB: {e}")
+        session.rollback()
+        return 0
+    finally:
+        session.close()
 
-# handlers
+# --- HANDLERS ---
 
 
 @dp.message(Command("start"))
@@ -130,7 +147,7 @@ async def cmd_set_mmr(message: types.Message, command: CommandObject):
 
 @dp.message(F.text == "📊 Stats")
 async def cmd_stats(message: types.Message):
-    # just a placeholder for now
+    # Тут можно будет добавить запрос к БД для статистики
     await message.answer("Stats update when game ends.")
 
 
@@ -149,7 +166,6 @@ async def btn_lose(message: types.Message):
 @dp.message()
 async def manual_input(message: types.Message):
     text = message.text.replace(" ", "")
-    # ignore commands
     if text.startswith("/"):
         return
 
@@ -159,13 +175,11 @@ async def manual_input(message: types.Message):
         emoji = "📈" if delta > 0 else "📉"
         await message.answer(f"Accepted ({delta}). {emoji} Ur pts: **{new_mmr}**", parse_mode="Markdown", reply_markup=get_keyboard())
     except ValueError:
-        pass  # ignore non-number text
+        pass
 
 
 async def main():
-    # start web server for keep-alive
     await start_web_server()
-    # start bot polling
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
