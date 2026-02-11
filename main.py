@@ -44,7 +44,7 @@ class UserMMR(Base):
 
 
 try:
-    engine = create_engine(DATABASE_URL)
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
 except Exception as e:
@@ -147,7 +147,6 @@ async def cmd_set_mmr(message: types.Message, command: CommandObject):
 
 @dp.message(F.text == "📊 Stats")
 async def cmd_stats(message: types.Message):
-    # Тут можно будет добавить запрос к БД для статистики
     await message.answer("Stats update when game ends.")
 
 
