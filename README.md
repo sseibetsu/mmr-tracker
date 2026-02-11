@@ -2,6 +2,8 @@
 
 simplest bot to count and store ur dota mmr quantity
 
+live @mmr_trackerbot
+
 ## че умеет
 - counts +25/-25 via 1 button
 - ur also able to write how many pts u've got, in case of dd
